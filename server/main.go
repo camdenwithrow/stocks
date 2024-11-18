@@ -1,19 +1,34 @@
 package main
 
 import (
-	"bufio"
+	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
+	"os/signal"
+	"time"
 
 	"github.com/camdenwithrow/stocks/common"
 )
 
 const PORT = common.SERVER_PORT
 
-var log = common.NewLogger()
-var conn net.Conn
+var (
+	log    = common.NewLogger()
+	connId = 0
+)
+
+type Conn struct {
+	Id int
+	net.Conn
+}
+
+type Worker struct {
+	ID     int
+	Conns  map[int]Conn
+	ConnCh chan Conn
+	DoneCh chan struct{}
+}
 
 func main() {
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", PORT))
@@ -22,44 +37,87 @@ func main() {
 		os.Exit(1)
 	}
 	defer listener.Close()
-	log.Info("Server is listening on port: %d", PORT)
 
-	go handleInput()
+	workers := NewWorkerPool(4)
+	go DistributeConnections(listener, workers)
 
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt)
+	<-quit
+
+	StopWorkerPool(workers)
+}
+
+func NewWorkerPool(numWorkers int) []*Worker {
+	workers := make([]*Worker, numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		worker := &Worker{
+			ID:     i,
+			Conns:  make(map[int]Conn),
+			ConnCh: make(chan Conn, 10),
+			DoneCh: make(chan struct{}),
+		}
+		go worker.Start()
+		workers[i] = worker
+	}
+	return workers
+}
+
+func (w *Worker) Start() {
+	fmt.Printf("Worker %d starting\n", w.ID)
+	for {
+		select {
+		case conn := <-w.ConnCh:
+			w.Conns[conn.Id] = conn
+			fmt.Printf("Worker %d added connection %d\n", w.ID, conn.Id)
+
+		default:
+			// Iterate over connections and process incoming data
+			for id, conn := range w.Conns {
+				conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+				buf := make([]byte, 1024)
+				n, err := conn.Read(buf)
+				if err != nil {
+					if errors.Is(err, os.ErrDeadlineExceeded) {
+						continue
+					}
+					fmt.Printf("Worker %d closing connection %d\n", w.ID, id)
+					delete(w.Conns, id)
+					conn.Close()
+					continue
+				}
+				fmt.Printf("Worker %d received from connection %d: %s\n", w.ID, id, string(buf[:n]))
+			}
+		case <-w.DoneCh:
+			// Stop worker
+			fmt.Printf("Worker %d stopping\n", w.ID)
+			for id, conn := range w.Conns {
+				conn.Close()
+				delete(w.Conns, id)
+			}
+			return
+		}
+	}
+}
+
+func DistributeConnections(listener net.Listener, workers []*Worker) {
+	workerCount := len(workers)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			log.Error("Failed to accept connection: %v", err)
+			continue
 		}
-		log.Info("Client connected")
-		go handleClient(conn)
+
+		// Assign connection to a worker (round-robin)
+		worker := workers[connId%workerCount]
+		connId++
+		worker.ConnCh <- Conn{Id: connId, Conn: conn}
 	}
 }
 
-func handleInput() {
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		text := scanner.Text()
-		_, err := conn.Write([]byte(text))
-		if err != nil {
-			log.Error("Could not write to connection")
-			return
-		}
-	}
-}
-
-func handleClient(newConn net.Conn) {
-	conn = newConn
-	for {
-		buf := make([]byte, 1024)
-		n, err := conn.Read(buf)
-		if err == io.EOF {
-			log.Error("Client disconnected")
-			return
-		} else if err != nil {
-			log.Error("Error reading connection: %v", err)
-			return
-		}
-		fmt.Printf("Received: %s\n", string(buf[:n]))
+func StopWorkerPool(workers []*Worker) {
+	for _, worker := range workers {
+		close(worker.DoneCh)
 	}
 }
