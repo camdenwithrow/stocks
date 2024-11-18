@@ -6,15 +6,20 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"time"
 
 	"github.com/camdenwithrow/stocks/common"
 )
 
-const PORT = common.SERVER_PORT
+const (
+	PORT       = common.SERVER_PORT
+	bufferSize = 4096 // 4KB
+)
 
 var (
-	log    = common.NewLogger()
+	log = common.NewLogger()
+
 	connId = 0
 )
 
@@ -28,6 +33,12 @@ type Worker struct {
 	Conns  map[int]Conn
 	ConnCh chan Conn
 	DoneCh chan struct{}
+}
+
+var byteArrayPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, bufferSize)
+	},
 }
 
 func main() {
@@ -75,7 +86,7 @@ func (w *Worker) Start() {
 			// Iterate over connections and process incoming data
 			for id, conn := range w.Conns {
 				conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-				buf := make([]byte, 1024)
+				buf := byteArrayPool.Get().([]byte)
 				n, err := conn.Read(buf)
 				if err != nil {
 					if errors.Is(err, os.ErrDeadlineExceeded) {
