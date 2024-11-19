@@ -122,12 +122,23 @@ func (w *Worker) Start() {
 
 		case msg := <-w.MsgCh:
 			var wg sync.WaitGroup
+			packet := common.Packet{
+				Version:   common.VERSION,
+				Type:      common.MESSAGE_PACKET,
+				Length:    uint16(len([]byte(msg))),
+				Timestamp: uint64(time.Now().Unix()),
+				Data:      []byte(msg),
+			}
 			for id, conn := range w.Conns {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					// log.Info(string(msg))
-					_, err := conn.Write(msg)
+					buf, err := packet.Serialize()
+					if err != nil {
+						log.Error("Failed to serialize package: %v", err)
+						return
+					}
+					_, err = conn.Write(buf)
 					if err != nil {
 						log.Error("Error worker: %d writing to connection: %d. Error: %v", w.ID, id, err)
 					}
@@ -154,7 +165,11 @@ func (w *Worker) Start() {
 						conn.Close()
 						return
 					}
-					fmt.Printf("Worker %d received from connection %d: %s\n", w.ID, id, string(buf[:n]))
+					packet, err := common.Deserialize(buf, n)
+					if err != nil {
+						log.Error("Failed to deserialize packet: %v", err)
+					}
+					fmt.Printf("Worker %d received from connection %d: %s\n", w.ID, id, string(packet.Data))
 				}()
 			}
 			wg.Wait()

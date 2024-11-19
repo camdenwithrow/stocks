@@ -26,7 +26,7 @@ type BroadcastMsg struct {
 var msgQ map[int]*BroadcastMsg = make(map[int]*BroadcastMsg)
 
 func main() {
-	connNum := 10000
+	connNum := 100
 
 	var wg sync.WaitGroup
 	go handleInput(connNum)
@@ -57,7 +57,19 @@ func startClient(wg *sync.WaitGroup) {
 
 		for k := range msgQ {
 			if !readMessages[k] {
-				conn.Write([]byte(msgQ[k].msg))
+				packet := common.Packet{
+					Version:   common.VERSION,
+					Type:      common.MESSAGE_PACKET,
+					Length:    uint16(len([]byte(msgQ[k].msg))),
+					Timestamp: uint64(time.Now().Unix()),
+					Data:      []byte(msgQ[k].msg),
+				}
+				buf, err := packet.Serialize()
+				if err != nil {
+					log.Error("Failed to serialize packet: %v", err)
+					continue
+				}
+				conn.Write(buf)
 				msgQ[k].readCount.Add(1)
 			}
 			newReadMessages[k] = true
@@ -83,7 +95,11 @@ func startClient(wg *sync.WaitGroup) {
 			}
 		}
 
-		fmt.Printf("Received: %s\n", string(buf[:n]))
+		packet, err := common.Deserialize(buf, n)
+		if err != nil {
+			log.Error("Failed to deserialize packet: %v", err)
+		}
+		fmt.Printf("Received: %s\n", string(packet.Data))
 	}
 }
 
