@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"net"
@@ -18,8 +19,7 @@ const (
 )
 
 var (
-	log = common.NewLogger()
-
+	log    = common.NewLogger()
 	connId = 0
 )
 
@@ -32,6 +32,7 @@ type Worker struct {
 	ID     int
 	Conns  map[int]Conn
 	ConnCh chan Conn
+	MsgCh  chan []byte
 	DoneCh chan struct{}
 }
 
@@ -49,8 +50,10 @@ func main() {
 	}
 	defer listener.Close()
 
-	workers := NewWorkerPool(4)
+	workers := NewWorkerPool(10)
 	go DistributeConnections(listener, workers)
+	go broadcastInput(workers)
+	// go broadcastRandomNums(workers)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt)
@@ -59,6 +62,31 @@ func main() {
 	StopWorkerPool(workers)
 }
 
+func broadcastInput(workers []*Worker) {
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		text := scanner.Text()
+		var wg sync.WaitGroup
+		wg.Wait()
+		for _, worker := range workers {
+			wg.Add(1)
+			go func() {
+				worker.MsgCh <- []byte(text)
+				defer wg.Done()
+			}()
+		}
+	}
+}
+
+// func broadcastRandomNums(workers []*Worker) {
+// 	for {
+// 		msg := fmt.Sprintln(time.Now().Format("15:05:05"))
+// 		for _, worker := range workers {
+// 			worker.MsgCh <- []byte(msg)
+// 		}
+// 	}
+// }
+
 func NewWorkerPool(numWorkers int) []*Worker {
 	workers := make([]*Worker, numWorkers)
 	for i := 0; i < numWorkers; i++ {
@@ -66,6 +94,7 @@ func NewWorkerPool(numWorkers int) []*Worker {
 			ID:     i,
 			Conns:  make(map[int]Conn),
 			ConnCh: make(chan Conn, 10),
+			MsgCh:  make(chan []byte, 10),
 			DoneCh: make(chan struct{}),
 		}
 		go worker.Start()
@@ -78,27 +107,6 @@ func (w *Worker) Start() {
 	fmt.Printf("Worker %d starting\n", w.ID)
 	for {
 		select {
-		case conn := <-w.ConnCh:
-			w.Conns[conn.Id] = conn
-			fmt.Printf("Worker %d added connection %d\n", w.ID, conn.Id)
-
-		default:
-			// Iterate over connections and process incoming data
-			for id, conn := range w.Conns {
-				conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-				buf := byteArrayPool.Get().([]byte)
-				n, err := conn.Read(buf)
-				if err != nil {
-					if errors.Is(err, os.ErrDeadlineExceeded) {
-						continue
-					}
-					fmt.Printf("Worker %d closing connection %d\n", w.ID, id)
-					delete(w.Conns, id)
-					conn.Close()
-					continue
-				}
-				fmt.Printf("Worker %d received from connection %d: %s\n", w.ID, id, string(buf[:n]))
-			}
 		case <-w.DoneCh:
 			// Stop worker
 			fmt.Printf("Worker %d stopping\n", w.ID)
@@ -107,6 +115,49 @@ func (w *Worker) Start() {
 				delete(w.Conns, id)
 			}
 			return
+
+		case conn := <-w.ConnCh:
+			w.Conns[conn.Id] = conn
+			fmt.Printf("Worker %d added connection %d\n", w.ID, conn.Id)
+
+		case msg := <-w.MsgCh:
+			var wg sync.WaitGroup
+			for id, conn := range w.Conns {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					// log.Info(string(msg))
+					_, err := conn.Write(msg)
+					if err != nil {
+						log.Error("Error worker: %d writing to connection: %d. Error: %v", w.ID, id, err)
+					}
+				}()
+			}
+			wg.Wait()
+
+		default:
+			// Iterate over connections and process incoming data
+			var wg sync.WaitGroup
+			for id, conn := range w.Conns {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					conn.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+					buf := byteArrayPool.Get().([]byte)
+					n, err := conn.Read(buf)
+					if err != nil {
+						if errors.Is(err, os.ErrDeadlineExceeded) {
+							return
+						}
+						fmt.Printf("Worker %d closing connection %d\n", w.ID, id)
+						delete(w.Conns, id)
+						conn.Close()
+						return
+					}
+					fmt.Printf("Worker %d received from connection %d: %s\n", w.ID, id, string(buf[:n]))
+				}()
+			}
+			wg.Wait()
 		}
 	}
 }
