@@ -198,3 +198,65 @@ func StopWorkerPool(workers []*Worker) {
 		close(worker.DoneCh)
 	}
 }
+
+// *** ORDER BOOK ***
+
+const (
+	Buy  = true
+	Sell = false
+)
+
+type Side bool // Buy = true, Sell = false
+
+type OrderBook struct {
+	Buy  *rbt
+	Sell *rbt
+}
+
+type PriceLevel struct {
+	Price  Price
+	Orders OrderQueue
+}
+
+type Price int // Price stored as x * 100, final 2 digits account for cents
+
+type Order struct {
+	Side      Side
+	Price     Price
+	Qty       int
+	Timestamp time.Time
+}
+
+type OrderQueue []Order
+
+func (ob *OrderBook) GetBestBid() {}
+func (ob *OrderBook) GetBestAsk() {}
+func (o *Order) RemoveOrder()     {}
+
+const (
+	red   = true
+	black = false
+)
+
+type color bool // red = true, black = false
+
+type rbt struct {
+	root *plNode
+}
+
+type plNode struct {
+	PriceLevel
+	color  color
+	parent *plNode
+	left   *plNode
+	right  *plNode
+}
+
+func (rbt *rbt) insert(node *plNode)                                 {}
+func (rbt *rbt) delete(node *plNode)                                 {}
+func (rbt *rbt) search(node *plNode)                                 {}
+func (rbt *rbt) inOrderTraverse(action func(*plNode) any, n *plNode) {}
+func (rbt *rbt) insertFix(z *plNode)                                 {}
+func (rbt *rbt) deleteFix(x *plNode)                                 {}
+func (rbt *rbt) rotateRight(y *plNode)                               {}
+func (rbt *rbt) rotateLeft(x *plNode)                                {}
